@@ -11,3 +11,11 @@ except Exception:
     b = types.ModuleType("torchaudio.backend"); c = types.ModuleType("torchaudio.backend.common")
     c.AudioMetaData = AudioMetaData; b.common = c
     sys.modules["torchaudio.backend"] = b; sys.modules["torchaudio.backend.common"] = c
+
+# Paketlenmis exe'de git cagrisi patlar; DF'nin commit hash'i sadece log icin.
+try:
+    import df.utils as _u
+    _u.get_git_root = lambda: None
+    _u.get_commit_hash = lambda: None
+except Exception:
+    pass

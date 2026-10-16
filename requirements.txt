@@ -1,6 +1,7 @@
 deepfilternet==0.5.6
 sounddevice
 soundfile
-numpy
+numpy==1.26.4
 pystray
 pillow
+scipy==1.13.1

@@ -35,50 +35,53 @@ WASAPI = sd.WasapiSettings(auto_convert=True)
 
 # ---------------------------------------------------------------- Maskeleme
 class NoiseGen:
-    def __init__(self):
-        self.b = np.zeros(7)
-        self.brown = 0.0
-        self.rng = np.random.default_rng()
-        self.rain_lp = 0.0
+    """Yumuşak, cızırtısız maskeleme sesleri: hepsi alçak geçiren filtreden geçer, stereo."""
 
-    def pink(self, n):
-        w = self.rng.standard_normal(n)
-        out = np.empty(n)
-        b = self.b
-        for i in range(n):  # Paul Kellet filtresi
-            x = w[i]
-            b[0] = 0.99886 * b[0] + x * 0.0555179
-            b[1] = 0.99332 * b[1] + x * 0.0750759
-            b[2] = 0.96900 * b[2] + x * 0.1538520
-            b[3] = 0.86650 * b[3] + x * 0.3104856
-            b[4] = 0.55000 * b[4] + x * 0.5329522
-            b[5] = -0.7616 * b[5] - x * 0.0168980
-            out[i] = b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + x * 0.5362
-            b[6] = x * 0.115926
-        return out * 0.11
+    def __init__(self):
+        from scipy.signal import butter, lfilter, lfilter_zi
+        self.lfilter = lfilter
+        self.rng = np.random.default_rng()
+        self.filters = {}
+        def mk(name, b, a):
+            self.filters[name] = (b, a, np.zeros((2, max(len(a), len(b)) - 1)))
+        mk("white", *butter(2, 7000, fs=SR))           # beyaz: tiz uç törpülü
+        # pembe: -3 dB/oktav (Kellet katsayılarına eşdeğer IIR) + 5 kHz alçak geçiren
+        mk("pink", [0.049922035, -0.095993537, 0.050612699, -0.004408786],
+           [1, -2.494956002, 2.017265875, -0.522189400])
+        mk("pink_lp", *butter(2, 5000, fs=SR))
+        mk("brown", *butter(1, 120, fs=SR))             # kahverengi: derin uğultu
+        mk("rain", *butter(2, [400, 3500], btype="band", fs=SR))
+        mk("rain_low", *butter(2, 900, fs=SR))
+        mk("drop", *butter(2, 2500, fs=SR))
+        self.mod = 0.0
+
+    def f(self, name, x):
+        b, a, zi = self.filters[name]
+        y = np.empty_like(x)
+        for ch in range(2):
+            y[ch], zi[ch] = self.lfilter(b, a, x[ch], zi=zi[ch])
+        return y
 
     def make(self, kind, n):
+        w = self.rng.standard_normal((2, n))
         if kind == "Beyaz":
-            return self.rng.standard_normal(n) * 0.25
-        if kind == "Pembe":
-            return self.pink(n)
-        if kind == "Kahverengi":
-            w = self.rng.standard_normal(n) * 0.02
-            out = np.empty(n)
-            v = self.brown
-            for i in range(n):
-                v = (v + w[i]) * 0.998
-                out[i] = v
-            self.brown = v
-            return out * 3.5
-        # Yağmur: yumuşak pembe taban + rastgele damla tıkırtıları
-        base = self.pink(n) * 0.8
-        drops = np.zeros(n)
-        k = self.rng.poisson(n / SR * 220)
-        for p in self.rng.integers(0, n, k):
-            L = min(int(SR * 0.004), n - p)
-            drops[p:p + L] += self.rng.standard_normal(L) * np.exp(-np.arange(L) / 40) * self.rng.uniform(0.05, 0.3)
-        return base + drops
+            out = self.f("white", w) * 0.32
+        elif kind == "Pembe":
+            out = self.f("pink_lp", self.f("pink", w)) * 2.3
+        elif kind == "Kahverengi":
+            out = self.f("brown", w) * 2.0
+        else:  # Yağmur: hışırtı bandı + derin taban + yumuşak, filtrelenmiş damlalar
+            out = self.f("rain", w) * 0.39 + self.f("rain_low", self.rng.standard_normal((2, n))) * 0.56
+            drops = np.zeros((2, n))
+            for p in self.rng.integers(0, n, self.rng.poisson(n / SR * 60)):
+                L = min(int(SR * 0.012), n - p)
+                env = np.exp(-np.arange(L) / (SR * 0.003))
+                drops[self.rng.integers(0, 2), p:p + L] += self.rng.standard_normal(L) * env * self.rng.uniform(0.05, 0.18)
+            out += self.f("drop", drops)
+            # yağmur şiddeti yavaşça dalgalansın
+            self.mod += 0.02 * (self.rng.uniform(0.7, 1.15) - self.mod - 0.0) if self.mod else 1.0
+            out *= self.mod
+        return out
 
 
 class Masker:
@@ -122,7 +125,7 @@ class Masker:
         self.gain_db += d
         g1 = 10 ** (self.gain_db / 20)
         sig = self.gen.make(self.kind, frames) * np.linspace(g0, g1, frames)
-        out[:] = np.repeat(sig[:, None], out.shape[1], axis=1).astype(np.float32)
+        out[:] = np.clip(sig.T, -1, 1).astype(np.float32)
 
     def start(self):
         self.stop()
@@ -160,7 +163,10 @@ class Cleaner:
         torch.set_num_threads(2)
         self.torch = torch
         self.enhance = enhance
-        self.model, self.state, _ = init_df(log_level="ERROR")
+        import os, sys
+        base = getattr(sys, "_MEIPASS", None)  # tek exe: model paketin içinde
+        mdir = os.path.join(base, "DeepFilterNet3") if base else None
+        self.model, self.state, _ = init_df(mdir, log_level="ERROR", log_file=None)
         self.enabled = True
         self.strength = 80  # 0..100
         self.in_dev = None
@@ -371,4 +377,9 @@ class App:
 
 
 if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:  # paket testi: modeli yükle, 1 sn işle, sonucu yaz
+        c = Cleaner(); y = c.process_block(np.random.randn(SR).astype(np.float32) * 0.05)
+        open(sys.argv[-1], "w").write(f"ok {len(y)} {len(sd.query_devices())}")
+        sys.exit(0)
     App().root.mainloop()

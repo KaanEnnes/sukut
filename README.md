@@ -1,10 +1,10 @@
 # Sükût — Gürültü maskeleme + Mikrofon temizleyici (Windows)
 
-## Tek komut: kur ve çalıştır
-```
-kur_ve_calistir.bat
-```
-İlk seferde Python ortamını kurar (Python 3.12 gerekir, ~1 GB indirme: PyTorch CPU), sonra uygulamayı açar.
+## Kullanım
+`Sukut.exe`'yi indir ve çift tıkla, hepsi bu. Python gerekmez, model içinde. Açılış 10-20 sn sürebilir.
+
+Kaynaktan çalıştırmak için: `kur_ve_calistir.bat`
+Exe'yi yeniden üretmek için: `.venv\Scripts\pyinstaller` komutu (bkz. build notu aşağıda).
 Pencereyi kapatınca sistem tepsisine iner; tepsideki ikondan "Göster" / "Çıkış".
 
 ## 1) Gürültü Maskeleme
